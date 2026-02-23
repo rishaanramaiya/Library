@@ -1,155 +1,1827 @@
-<html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>My Library System</title>
-<style>
-    body {
-        font-family: Arial, sans-serif;
-        background: #f4f4f4;
-        padding: 20px;
-    }
-    h1, h2 {
-        color: #333;
-    }
-    section {
-        background: white;
-        padding: 15px;
-        margin-bottom: 20px;
-        border-radius: 5px;
-    }
-    input, button, select {
-        padding: 8px;
-        margin: 5px 0;
-        width: 100%;
-    }
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 10px;
-    }
-    th, td {
-        border: 1px solid #ccc;
-        padding: 8px;
-        text-align: left;
-    }
-    th {
-        background: #eee;
-    }
-</style>
-</head>
-<body>
 
-<h1>📚 The Ramaiya Library</h1>
+// Zelda-style SDL2 game (single-file, 1000+ lines)
+// Build: g++ -std=c++17 -O2 main.cpp -lSDL2 -lSDL2_ttf
+// Note: Requires SDL2 and SDL2_ttf installed.
 
-<section>
-    <h2>Add Book</h2>
-    <input id="bookTitle" placeholder="Book Title">
-    <input id="bookAuthor" placeholder="Author">
-    <input id="bookBarcode" placeholder="Barcode Number">
-    <button onclick="addBook()">Add Book</button>
-</section>
+#include <SDL.h>
+#include <SDL_ttf.h>
 
-<section>
-    <h2>Add Patron</h2>
-    <input id="patronName" placeholder="Patron Name">
-    <input id="patronId" placeholder="Patron ID">
-    <button onclick="addPatron()">Add Patron</button>
-</section>
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <deque>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <random>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
 
-<section>
-    <h2>Check Out / Return Book</h2>
-    <select id="bookSelect"></select>
-    <select id="patronSelect"></select>
-    <button onclick="checkoutBook()">Check Out</button>
-    <button onclick="returnBook()">Return</button>
-</section>
+// ----------------------------------------------
+// Utility
+// ----------------------------------------------
 
-<section>
-    <h2>Book Catalog</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Title</th>
-                <th>Author</th>
-                <th>Barcode</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody id="bookTable"></tbody>
-    </table>
-</section>
+struct Vec2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
 
-<script>
-let books = JSON.parse(localStorage.getItem("books")) || [];
-let patrons = JSON.parse(localStorage.getItem("patrons")) || [];
+struct IVec2 {
+    int x = 0;
+    int y = 0;
+};
 
-function save() {
-    localStorage.setItem("books", JSON.stringify(books));
-    localStorage.setItem("patrons", JSON.stringify(patrons));
-    render();
+static float clampf(float v, float lo, float hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
 }
 
-function addBook() {
-    books.push({
-        title: bookTitle.value,
-        author: bookAuthor.value,
-        barcode: bookBarcode.value,
-        checkedOutTo: null
-    });
-    bookTitle.value = bookAuthor.value = bookBarcode.value = "";
-    save();
+static int clampi(int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
 }
 
-function addPatron() {
-    patrons.push({
-        name: patronName.value,
-        id: patronId.value
-    });
-    patronName.value = patronId.value = "";
-    save();
+static float length(Vec2 v) {
+    return std::sqrt(v.x * v.x + v.y * v.y);
 }
 
-function checkoutBook() {
-    const book = books[bookSelect.value];
-    const patron = patrons[patronSelect.value];
-    if (book && patron && !book.checkedOutTo) {
-        book.checkedOutTo = patron.name;
-        save();
+static Vec2 normalize(Vec2 v) {
+    float len = length(v);
+    if (len <= 0.0001f) return {0, 0};
+    return {v.x / len, v.y / len};
+}
+
+static float dist(Vec2 a, Vec2 b) {
+    return length({a.x - b.x, a.y - b.y});
+}
+
+static IVec2 toTile(Vec2 p, int tileSize) {
+    return {static_cast<int>(p.x) / tileSize, static_cast<int>(p.y) / tileSize};
+}
+
+static Vec2 toWorld(IVec2 t, int tileSize) {
+    return {static_cast<float>(t.x * tileSize), static_cast<float>(t.y * tileSize)};
+}
+
+static uint32_t tickMs() {
+    return SDL_GetTicks();
+}
+
+// ----------------------------------------------
+// Random
+// ----------------------------------------------
+
+struct Rng {
+    std::mt19937 gen;
+    Rng() {
+        std::random_device rd;
+        gen.seed(rd());
+    }
+    int range(int lo, int hi) {
+        std::uniform_int_distribution<int> d(lo, hi);
+        return d(gen);
+    }
+    float frange(float lo, float hi) {
+        std::uniform_real_distribution<float> d(lo, hi);
+        return d(gen);
+    }
+    bool chance(float p) {
+        std::bernoulli_distribution d(p);
+        return d(gen);
+    }
+};
+
+// ----------------------------------------------
+// Constants
+// ----------------------------------------------
+
+static const int SCREEN_W = 960;
+static const int SCREEN_H = 540;
+static const int TILE = 32;
+static const int MAP_W = 25;
+static const int MAP_H = 16;
+static const float PLAYER_SPEED = 150.0f;
+static const float ENEMY_SPEED = 80.0f;
+static const float PROJECTILE_SPEED = 300.0f;
+static const float BOSS_SPEED = 60.0f;
+static const int MAX_HEARTS = 10;
+static const int FPS_CAP = 300;
+
+// ----------------------------------------------
+// Colors
+// ----------------------------------------------
+
+struct Color {
+    uint8_t r, g, b, a;
+};
+
+static const Color COLOR_BG{20, 26, 38, 255};
+static const Color COLOR_WALL{50, 70, 90, 255};
+static const Color COLOR_FLOOR{30, 40, 50, 255};
+static const Color COLOR_PLAYER{220, 220, 140, 255};
+static const Color COLOR_ENEMY{200, 70, 70, 255};
+static const Color COLOR_BOSS{140, 40, 200, 255};
+static const Color COLOR_NPC{80, 200, 120, 255};
+static const Color COLOR_ITEM{240, 200, 80, 255};
+static const Color COLOR_TEXT{220, 230, 240, 255};
+static const Color COLOR_HUD{120, 200, 240, 255};
+static const Color COLOR_PROJECTILE{255, 190, 80, 255};
+static const Color COLOR_RARE{120, 220, 255, 255};
+static const Color COLOR_EPIC{200, 120, 255, 255};
+static const Color COLOR_LEGEND{255, 210, 120, 255};
+
+// ----------------------------------------------
+// Rendering helpers
+// ----------------------------------------------
+
+static void setColor(SDL_Renderer* r, Color c) {
+    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
+}
+
+static void drawRect(SDL_Renderer* r, float x, float y, float w, float h, Color c) {
+    SDL_Rect rc{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
+    setColor(r, c);
+    SDL_RenderFillRect(r, &rc);
+}
+
+static void drawOutline(SDL_Renderer* r, float x, float y, float w, float h, Color c) {
+    SDL_Rect rc{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
+    setColor(r, c);
+    SDL_RenderDrawRect(r, &rc);
+}
+
+static void drawCircle(SDL_Renderer* r, int cx, int cy, int radius, Color c) {
+    setColor(r, c);
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            if (x * x + y * y <= radius * radius) {
+                SDL_RenderDrawPoint(r, cx + x, cy + y);
+            }
+        }
     }
 }
 
-function returnBook() {
-    const book = books[bookSelect.value];
-    if (book) {
-        book.checkedOutTo = null;
-        save();
+// ----------------------------------------------
+// Font
+// ----------------------------------------------
+
+struct Font {
+    TTF_Font* font = nullptr;
+    bool init(const std::string& path, int size) {
+        font = TTF_OpenFont(path.c_str(), size);
+        return font != nullptr;
+    }
+    void destroy() {
+        if (font) TTF_CloseFont(font);
+        font = nullptr;
+    }
+};
+
+static void drawText(SDL_Renderer* r, TTF_Font* font, int x, int y, const std::string& text, Color c) {
+    if (!font) return;
+    SDL_Color sc{c.r, c.g, c.b, c.a};
+    SDL_Surface* surf = TTF_RenderText_Blended(font, text.c_str(), sc);
+    if (!surf) return;
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
+    SDL_Rect dst{x, y, surf->w, surf->h};
+    SDL_FreeSurface(surf);
+    if (tex) {
+        SDL_RenderCopy(r, tex, nullptr, &dst);
+        SDL_DestroyTexture(tex);
     }
 }
+// ----------------------------------------------
+// Tile map
+// ----------------------------------------------
 
-function render() {
-    bookTable.innerHTML = "";
-    bookSelect.innerHTML = "";
-    patronSelect.innerHTML = "";
+enum TileType {
+    TileFloor = 0,
+    TileWall = 1,
+    TileDoor = 2,
+    TileWater = 3,
+    TileGap = 4,
+    TilePillar = 5,
+    TileCracked = 6,
+    TileGate = 7,
+    TileSwitch = 8
+};
 
-    books.forEach((b, i) => {
-        bookTable.innerHTML += `
-            <tr>
-                <td>${b.title}</td>
-                <td>${b.author}</td>
-                <td>${b.barcode}</td>
-                <td>${b.checkedOutTo ? "Out to " + b.checkedOutTo : "Available"}</td>
-            </tr>`;
-        bookSelect.innerHTML += `<option value="${i}">${b.title}</option>`;
-    });
+struct Room {
+    int id = 0;
+    std::array<int, MAP_W * MAP_H> tiles{};
+    std::string name;
+    IVec2 exits; // bitmask NESW
 
-    patrons.forEach((p, i) => {
-        patronSelect.innerHTML += `<option value="${i}">${p.name}</option>`;
-    });
+    int get(int x, int y) const {
+        if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return TileWall;
+        return tiles[y * MAP_W + x];
+    }
+    void set(int x, int y, int v) {
+        if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return;
+        tiles[y * MAP_W + x] = v;
+    }
+};
+
+struct Dungeon {
+    std::vector<Room> rooms;
+    int current = 0;
+
+    Room& cur() { return rooms[current]; }
+    const Room& cur() const { return rooms[current]; }
+};
+
+// ----------------------------------------------
+// Entities
+// ----------------------------------------------
+
+struct Projectile {
+    Vec2 pos;
+    Vec2 vel;
+    int damage = 1;
+    bool friendly = true;
+    bool alive = true;
+};
+
+struct Item {
+    Vec2 pos;
+    std::string name;
+    bool picked = false;
+    int rarity = 0; // 0 common, 1 rare, 2 epic, 3 legend
+};
+
+struct NPC {
+    Vec2 pos;
+    std::vector<std::string> lines;
+    int currentLine = 0;
+    bool talking = false;
+    bool isGuide = false;
+    bool isTrader = false;
+};
+
+struct Enemy {
+    Vec2 pos;
+    int hp = 3;
+    int maxHp = 3;
+    bool boss = false;
+    int bossType = 0;
+    bool rewarded = false;
+    float cooldown = 0.0f;
+};
+
+struct Player {
+    Vec2 pos;
+    Vec2 vel;
+    int hp = 6;
+    int maxHp = 6;
+    int rupees = 0;
+    int keys = 0;
+    int attack = 1;
+    float speed = PLAYER_SPEED;
+    float dashMult = 3.0f;
+    int xp = 0;
+    bool invincible = false;
+    float invincTime = 0.0f;
+    float attackCooldown = 0.0f;
+};
+
+// ----------------------------------------------
+// Inventory
+// ----------------------------------------------
+
+struct Inventory {
+    std::vector<std::string> items;
+    int selected = 0;
+
+    void add(const std::string& s) {
+        items.push_back(s);
+    }
+
+    std::string current() const {
+        if (items.empty()) return "";
+        return items[clampi(selected, 0, static_cast<int>(items.size()) - 1)];
+    }
+
+    void next() {
+        if (items.empty()) return;
+        selected = (selected + 1) % static_cast<int>(items.size());
+    }
+
+    void prev() {
+        if (items.empty()) return;
+        selected = (selected - 1 + static_cast<int>(items.size())) % static_cast<int>(items.size());
+    }
+};
+
+// ----------------------------------------------
+// Input
+// ----------------------------------------------
+
+enum Action {
+    ActMoveUp = 0,
+    ActMoveDown,
+    ActMoveLeft,
+    ActMoveRight,
+    ActAttack,
+    ActInteract,
+    ActUseItem,
+    ActDash,
+    ActLockOn,
+    ActInvToggle,
+    ActInvNext,
+    ActInvPrev,
+    ActCount
+};
+
+struct Keybinds {
+    std::array<SDL_Scancode, ActCount> keys{};
+};
+
+struct InputState {
+    Keybinds binds;
+    bool remapMode = false;
+    int remapIndex = 0;
+
+    SDL_GameController* pad = nullptr;
+    bool padConnected = false;
+
+    int mouseX = 0;
+    int mouseY = 0;
+    bool mouseShoot = false;
+
+    bool lockOn = false;
+    int lockTarget = -1;
+
+    float dashCooldown = 0.0f;
+    float dashTime = 0.0f;
+    Vec2 dashDir{0, 0};
+};
+
+struct Settings {
+    bool showHelp = false;
+    bool showFps = true;
+    bool showMinimap = true;
+    bool showSettings = false;
+    bool showWorldMap = false;
+    int fpsCap = 300;
+    int sfxVolume = 70;
+    int musicVolume = 60;
+    int selected = 0;
+};
+// ----------------------------------------------
+// Game
+// ----------------------------------------------
+
+struct Game {
+    SDL_Window* window = nullptr;
+    SDL_Renderer* renderer = nullptr;
+    bool running = true;
+
+    Font uiFont;
+
+    Dungeon dungeon;
+    Player player;
+    Inventory inv;
+    InputState input;
+    Settings settings;
+
+    std::vector<Enemy> enemies;
+    std::vector<Item> items;
+    std::vector<NPC> npcs;
+    std::vector<Projectile> projectiles;
+    NPC sohaan;
+    bool sohaanActive = true;
+    NPC alain;
+    bool showShop = false;
+    int shopSelected = 0;
+
+    Rng rng;
+
+    uint32_t lastTick = 0;
+    float delta = 0.0f;
+
+    bool showDialogue = false;
+    std::string dialogueText;
+
+    bool showInventory = false;
+
+    bool win = false;
+    int worldTier = 1;
+    int baseRooms = 5;
+    int procCount = 0;
+
+    float fps = 0.0f;
+    float fpsTimer = 0.0f;
+    int fpsFrames = 0;
+
+    std::string statusText;
+    float statusTime = 0.0f;
+    Color statusColor{220, 230, 240, 255};
+
+    int worldSeed = 1;
+
+    void setupDefaultBinds() {
+        input.binds.keys[ActMoveUp] = SDL_SCANCODE_W;
+        input.binds.keys[ActMoveDown] = SDL_SCANCODE_S;
+        input.binds.keys[ActMoveLeft] = SDL_SCANCODE_A;
+        input.binds.keys[ActMoveRight] = SDL_SCANCODE_D;
+        input.binds.keys[ActAttack] = SDL_SCANCODE_SPACE;
+        input.binds.keys[ActInteract] = SDL_SCANCODE_E;
+        input.binds.keys[ActUseItem] = SDL_SCANCODE_X;
+        input.binds.keys[ActDash] = SDL_SCANCODE_LSHIFT;
+        input.binds.keys[ActLockOn] = SDL_SCANCODE_TAB;
+        input.binds.keys[ActInvToggle] = SDL_SCANCODE_I;
+        input.binds.keys[ActInvNext] = SDL_SCANCODE_R;
+        input.binds.keys[ActInvPrev] = SDL_SCANCODE_F;
+    }
+
+    const char* actionName(Action a) const {
+        switch (a) {
+            case ActMoveUp: return "Move Up";
+            case ActMoveDown: return "Move Down";
+            case ActMoveLeft: return "Move Left";
+            case ActMoveRight: return "Move Right";
+            case ActAttack: return "Attack";
+            case ActInteract: return "Interact";
+            case ActUseItem: return "Use Item";
+            case ActDash: return "Dash";
+            case ActLockOn: return "Lock-On";
+            case ActInvToggle: return "Inventory Toggle";
+            case ActInvNext: return "Inventory Next";
+            case ActInvPrev: return "Inventory Prev";
+            default: return "Unknown";
+        }
+    }
+
+    void openController() {
+        if (input.padConnected) return;
+        int count = SDL_NumJoysticks();
+        for (int i = 0; i < count; ++i) {
+            if (SDL_IsGameController(i)) {
+                input.pad = SDL_GameControllerOpen(i);
+                if (input.pad) {
+                    input.padConnected = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    void closeController() {
+        if (input.pad) SDL_GameControllerClose(input.pad);
+        input.pad = nullptr;
+        input.padConnected = false;
+    }
+
+    std::string bindsPath() const {
+        return "controls.cfg";
+    }
+
+    void pushStatus(const std::string& text, float seconds = 2.0f) {
+        statusText = text;
+        statusTime = seconds;
+        statusColor = COLOR_TEXT;
+    }
+
+    void saveBinds() {
+        std::ofstream out(bindsPath());
+        if (!out) {
+            pushStatus("Failed to save binds");
+            return;
+        }
+        for (int i = 0; i < ActCount; ++i) {
+            const char* name = actionName(static_cast<Action>(i));
+            const char* keyName = SDL_GetScancodeName(input.binds.keys[i]);
+            out << name << "=" << keyName << "\n";
+        }
+        pushStatus("Binds saved");
+    }
+
+    void loadBinds() {
+        std::ifstream in(bindsPath());
+        if (!in) {
+            return;
+        }
+        std::string line;
+        while (std::getline(in, line)) {
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string name = line.substr(0, eq);
+            std::string key = line.substr(eq + 1);
+            SDL_Scancode sc = SDL_GetScancodeFromName(key.c_str());
+            if (sc == SDL_SCANCODE_UNKNOWN) continue;
+            for (int i = 0; i < ActCount; ++i) {
+                if (name == actionName(static_cast<Action>(i))) {
+                    input.binds.keys[i] = sc;
+                }
+            }
+        }
+        pushStatus("Binds loaded");
+    }
+
+    bool init() {
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) return false;
+        if (TTF_Init() != 0) return false;
+
+        window = SDL_CreateWindow("Zelda-like SDL2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
+        if (!window) return false;
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer) return false;
+
+        // Use a common font path; user can change if needed.
+        uiFont.init("C:/Windows/Fonts/arial.ttf", 16);
+
+        setupDefaultBinds();
+        loadBinds();
+        openController();
+
+        setupDungeon();
+        setupRoomEntities();
+
+        lastTick = tickMs();
+        return true;
+    }
+
+    void shutdown() {
+        uiFont.destroy();
+        closeController();
+        if (renderer) SDL_DestroyRenderer(renderer);
+        if (window) SDL_DestroyWindow(window);
+        TTF_Quit();
+        SDL_Quit();
+    }
+
+    void setupDungeon() {
+        dungeon.rooms.clear();
+        worldSeed = worldTier * 1337 + rng.range(1, 999);
+
+        Room r0;
+        r0.id = 0;
+        r0.name = "Forest Edge";
+        r0.exits = {1, 1}; // dummy
+        fillRoom(r0);
+        carveDoors(r0, true, true, false, false);
+
+        Room r1;
+        r1.id = 1;
+        r1.name = "Ancient Hall";
+        r1.exits = {1, 1};
+        fillRoom(r1);
+        carveDoors(r1, true, false, true, true);
+        addGate(r1, MAP_W - 2, MAP_H / 2);
+        addSwitch(r1, 6, 12);
+
+        Room r2;
+        r2.id = 2;
+        r2.name = "Underground Lake";
+        r2.exits = {1, 1};
+        fillRoom(r2);
+        carveDoors(r2, false, true, true, false);
+        addWater(r2);
+        addGapPuzzle(r2);
+        addCrackedWall(r2);
+
+        Room r3;
+        r3.id = 3;
+        r3.name = "Boss Sanctuary";
+        r3.exits = {1, 1};
+        fillRoom(r3);
+        carveDoors(r3, false, false, false, true);
+
+        Room r4;
+        r4.id = 4;
+        r4.name = "Hidden Grove";
+        r4.exits = {1, 1};
+        fillRoom(r4);
+        carveDoors(r4, true, false, false, false);
+
+        dungeon.rooms.push_back(r0);
+        dungeon.rooms.push_back(r1);
+        dungeon.rooms.push_back(r2);
+        dungeon.rooms.push_back(r3);
+        dungeon.rooms.push_back(r4);
+
+        procCount = clampi(worldTier, 0, 6);
+        for (int i = 0; i < procCount; ++i) {
+            bool first = (i == 0);
+            bool last = (i == procCount - 1);
+            addProceduralRoom(baseRooms + i, first, last);
+        }
+        if (procCount > 0) {
+            dungeon.rooms[4].set(MAP_W / 2, MAP_H - 1, TileDoor);
+        }
+
+        dungeon.current = 0;
+        player.pos = {TILE * 2.0f, TILE * 2.0f};
+    }
+
+    void fillRoom(Room& r) {
+        for (int y = 0; y < MAP_H; ++y) {
+            for (int x = 0; x < MAP_W; ++x) {
+                if (x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1) {
+                    r.set(x, y, TileWall);
+                } else {
+                    r.set(x, y, TileFloor);
+                }
+            }
+        }
+        // Add some random obstacles
+        for (int i = 0; i < 40; ++i) {
+            int x = rng.range(2, MAP_W - 3);
+            int y = rng.range(2, MAP_H - 3);
+            r.set(x, y, TileWall);
+        }
+    }
+
+    void carveDoors(Room& r, bool n, bool e, bool s, bool w) {
+        if (n) {
+            r.set(MAP_W / 2, 0, TileDoor);
+        }
+        if (s) {
+            r.set(MAP_W / 2, MAP_H - 1, TileDoor);
+        }
+        if (e) {
+            r.set(MAP_W - 1, MAP_H / 2, TileDoor);
+        }
+        if (w) {
+            r.set(0, MAP_H / 2, TileDoor);
+        }
+    }
+
+    void addWater(Room& r) {
+        for (int y = 5; y < 10; ++y) {
+            for (int x = 7; x < 17; ++x) {
+                r.set(x, y, TileWater);
+            }
+        }
+    }
+
+    void addGapPuzzle(Room& r) {
+        for (int x = 4; x < 12; ++x) {
+            r.set(x, 7, TileGap);
+        }
+        r.set(8, 7, TilePillar);
+    }
+
+    void addCrackedWall(Room& r) {
+        for (int y = 6; y < 10; ++y) {
+            r.set(MAP_W - 2, y, TileCracked);
+        }
+    }
+
+    void addGate(Room& r, int x, int y) {
+        r.set(x, y, TileGate);
+    }
+
+    void addSwitch(Room& r, int x, int y) {
+        r.set(x, y, TileSwitch);
+    }
+
+    void addProceduralRoom(int id, bool first, bool last) {
+        Room r;
+        r.id = id;
+        r.name = "Wild Ruins " + std::to_string(id - baseRooms + 1);
+        r.exits = {1, 1};
+        fillRoom(r);
+
+        bool west = true;
+        bool east = true;
+        if (first) west = true;
+        if (last) east = false;
+
+        carveDoors(r, false, east, false, west);
+
+        // Tiered procedural puzzle layouts
+        int roll = rng.range(0, 3);
+        if (roll == 0) addWater(r);
+        if (roll == 1) addGapPuzzle(r);
+        if (roll == 2) addCrackedWall(r);
+        if (roll == 3) {
+            addGate(r, MAP_W - 2, MAP_H / 2);
+            addSwitch(r, 6, 12);
+        }
+
+        if (worldTier >= 3 && rng.chance(0.4f)) {
+            addGapPuzzle(r);
+        }
+        if (worldTier >= 4 && rng.chance(0.3f)) {
+            addCrackedWall(r);
+        }
+        if (worldTier >= 5 && rng.chance(0.3f)) {
+            addGate(r, MAP_W - 2, MAP_H / 2);
+            addSwitch(r, 6, 12);
+        }
+
+        dungeon.rooms.push_back(r);
+    }
+
+    void setupRoomEntities() {
+        enemies.clear();
+        items.clear();
+        npcs.clear();
+        projectiles.clear();
+
+        if (dungeon.current == 0) {
+            enemies.push_back(makeEnemy(8, 8));
+            enemies.push_back(makeEnemy(12, 10));
+            items.push_back(makeItem("Rupee", 6, 6));
+            items.push_back(makeItem("Potion", 18, 10));
+            npcs.push_back(makeNPC(4, 12, {"Welcome, hero.", "Find the boss to the east!"}));
+        } else if (dungeon.current == 1) {
+            enemies.push_back(makeEnemy(6, 4));
+            enemies.push_back(makeEnemy(18, 7));
+            enemies.push_back(makeEnemy(14, 11));
+            items.push_back(makeItem("Key", 3, 3));
+            items.push_back(makeItem("Boomerang", 20, 12));
+            npcs.push_back(makeNPC(10, 8, {"Beware the lake to the south.", "The boss awaits."}));
+        } else if (dungeon.current == 2) {
+            enemies.push_back(makeEnemy(5, 5));
+            enemies.push_back(makeEnemy(19, 12));
+            enemies.push_back(makeEnemy(10, 8));
+            items.push_back(makeItem("Hookshot", 2, 12));
+            items.push_back(makeItem("Rupee", 21, 4));
+        } else if (dungeon.current == 3) {
+            Enemy boss = makeEnemy(12, 8);
+            boss.boss = true;
+            boss.bossType = worldTier % 3;
+            boss.hp = 18 + worldTier * 2;
+            boss.maxHp = boss.hp;
+            enemies.push_back(boss);
+            items.push_back(makeItem("Triforce", 22, 12));
+        } else if (dungeon.current == 4) {
+            items.push_back(makeItem("Gloves", 6, 6));
+            items.push_back(makeItem("Boots", 18, 10));
+            addAlainTrader();
+        } else if (dungeon.current >= baseRooms && dungeon.current < baseRooms + procCount) {
+            IVec2 p1 = randomOpenTile();
+            items.push_back(makeItem(randomUpgrade(), p1.x, p1.y));
+
+            if (worldTier >= 2 && rng.chance(0.35f)) {
+                IVec2 p2 = randomOpenTile();
+                items.push_back(makeItem(randomUpgrade(), p2.x, p2.y));
+            }
+
+            if (worldTier >= 3 && rng.chance(0.15f)) {
+                IVec2 p3 = randomOpenTile();
+                items.push_back(makeItem(randomRelic(), p3.x, p3.y));
+            }
+        }
+
+        addSohaanGuide();
+
+        // Scale enemies per world tier
+        for (int i = 0; i < worldTier / 2; ++i) {
+            enemies.push_back(makeEnemy(6 + i, 6 + i));
+        }
+    }
+
+    Enemy makeEnemy(int tx, int ty) {
+        Enemy e;
+        e.pos = {tx * TILE + TILE * 0.25f, ty * TILE + TILE * 0.25f};
+        int base = 3 + (worldTier - 1);
+        e.hp = base;
+        e.maxHp = base;
+        e.cooldown = rng.frange(0.0f, 2.0f);
+        return e;
+    }
+
+    Item makeItem(const std::string& name, int tx, int ty) {
+        Item it;
+        it.name = name;
+        it.pos = {tx * TILE + TILE * 0.25f, ty * TILE + TILE * 0.25f};
+        if (name.rfind("Relic-", 0) == 0) it.rarity = 3;
+        else if (name.rfind("Upgrade-", 0) == 0) it.rarity = 2;
+        else if (name == "Hookshot" || name == "Boomerang" || name == "Gloves" || name == "Boots") it.rarity = 1;
+        return it;
+    }
+
+    IVec2 randomOpenTile() {
+        for (int tries = 0; tries < 200; ++tries) {
+            int x = rng.range(2, MAP_W - 3);
+            int y = rng.range(2, MAP_H - 3);
+            int t = dungeon.cur().get(x, y);
+            if (t == TileFloor) return {x, y};
+        }
+        return {2, 2};
+    }
+
+    std::string randomUpgrade() {
+        std::vector<std::string> ups = {
+            "Upgrade-HP",
+            "Upgrade-ATK",
+            "Upgrade-Speed",
+            "Upgrade-Dash",
+            "Upgrade-Heart"
+        };
+        return ups[rng.range(0, static_cast<int>(ups.size()) - 1)];
+    }
+
+    std::string randomRelic() {
+        std::vector<std::string> rel = {
+            "Relic-Sun",
+            "Relic-Storm",
+            "Relic-Ocean"
+        };
+        return rel[rng.range(0, static_cast<int>(rel.size()) - 1)];
+    }
+
+    NPC makeNPC(int tx, int ty, const std::vector<std::string>& lines) {
+        NPC n;
+        n.pos = {tx * TILE + TILE * 0.25f, ty * TILE + TILE * 0.25f};
+        n.lines = lines;
+        return n;
+    }
+
+    void addAlainTrader() {
+        IVec2 p{6, 12};
+        alain = makeNPC(p.x, p.y, {"Alain: Welcome to the mountain shrine.", "Alain: Spend XP to grow stronger."});
+        alain.isTrader = true;
+        npcs.push_back(alain);
+    }
+
+    std::string guidanceText() const {
+        if (!hasItem("Boomerang")) return "Sohaan: Seek the boomerang in the Ancient Hall.";
+        if (!hasItem("Hookshot")) return "Sohaan: The hookshot lies near the Underground Lake.";
+        if (!hasItem("Gloves")) return "Sohaan: Hidden Grove holds the Gloves.";
+        if (!hasItem("Boots")) return "Sohaan: Boots can open paths across gaps.";
+        if (worldTier <= 1) return "Sohaan: Face the boss in the east sanctuary.";
+        return "Sohaan: Each Triforce raises World Tier. Hunt relics in the Wild Ruins.";
+    }
+
+    Vec2 guidanceTarget() const {
+        // Rough targets for the next objective
+        if (!hasItem("Boomerang")) return {TILE * 20.0f, TILE * 12.0f};
+        if (!hasItem("Hookshot")) return {TILE * 2.0f, TILE * 12.0f};
+        if (!hasItem("Gloves")) return {TILE * 6.0f, TILE * 6.0f};
+        if (!hasItem("Boots")) return {TILE * 18.0f, TILE * 10.0f};
+        if (worldTier <= 1) return {TILE * 22.0f, TILE * 12.0f};
+        return {TILE * 10.0f, TILE * 8.0f};
+    }
+
+    void addSohaanGuide() {
+        if (!sohaanActive) return;
+        IVec2 p = randomOpenTile();
+        sohaan = makeNPC(p.x, p.y, {guidanceText(), "Sohaan: I will guide you further, hero."});
+        sohaan.isGuide = true;
+        npcs.push_back(sohaan);
+    }
+
+    void updateSohaanFollow(float dt) {
+        if (!sohaanActive) return;
+        for (auto& n : npcs) {
+            if (!n.isGuide) continue;
+            float d = dist(player.pos, n.pos);
+            if (d > TILE * 2.0f) {
+                Vec2 dir = normalize({player.pos.x - n.pos.x, player.pos.y - n.pos.y});
+                n.pos.x += dir.x * (PLAYER_SPEED * 0.6f) * dt;
+                n.pos.y += dir.y * (PLAYER_SPEED * 0.6f) * dt;
+            }
+        }
+    }
+
+    bool isBlockedTile(int x, int y) {
+        int t = dungeon.cur().get(x, y);
+        if (t == TileWall) return true;
+        if (t == TileWater) return true;
+        if (t == TileGap) return true;
+        if (t == TileGate) return true;
+        return false;
+    }
+
+    bool isBlocked(Vec2 p) {
+        IVec2 t = toTile(p, TILE);
+        return isBlockedTile(t.x, t.y);
+    }
+
+    bool rectIntersects(Vec2 aPos, float aSize, Vec2 bPos, float bSize) {
+        SDL_FRect a{aPos.x, aPos.y, aSize, aSize};
+        SDL_FRect b{bPos.x, bPos.y, bSize, bSize};
+        return SDL_HasIntersectionF(&a, &b);
+    }
+
+    bool actionKeyDown(const Uint8* keys, Action a) const {
+        return keys[input.binds.keys[a]] != 0;
+    }
+
+    Vec2 getMovementInput(const Uint8* keys) const {
+        Vec2 dir{0, 0};
+        if (actionKeyDown(keys, ActMoveUp)) dir.y -= 1;
+        if (actionKeyDown(keys, ActMoveDown)) dir.y += 1;
+        if (actionKeyDown(keys, ActMoveLeft)) dir.x -= 1;
+        if (actionKeyDown(keys, ActMoveRight)) dir.x += 1;
+
+        if (input.padConnected && input.pad) {
+            float ax = SDL_GameControllerGetAxis(input.pad, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
+            float ay = SDL_GameControllerGetAxis(input.pad, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
+            const float dead = 0.2f;
+            if (std::abs(ax) > dead) dir.x = ax;
+            if (std::abs(ay) > dead) dir.y = ay;
+        }
+
+        return normalize(dir);
+    }
+
+    void movePlayer(float dt, Vec2 dir) {
+        player.vel = {dir.x * player.speed, dir.y * player.speed};
+
+        Vec2 next = player.pos;
+        next.x += player.vel.x * dt;
+        next.y += player.vel.y * dt;
+
+        if (!isBlocked(next)) {
+            player.pos = next;
+        }
+    }
+
+    void handleDoorTransition() {
+        IVec2 t = toTile(player.pos, TILE);
+        int tile = dungeon.cur().get(t.x, t.y);
+        if (tile != TileDoor) return;
+
+        // Simple mapping for 4 rooms
+        if (dungeon.current == 0 && t.x == MAP_W / 2 && t.y == 0) {
+            dungeon.current = 1;
+            player.pos = {TILE * (MAP_W / 2.0f), TILE * (MAP_H - 2.0f)};
+        } else if (dungeon.current == 0 && t.x == MAP_W - 1 && t.y == MAP_H / 2) {
+            dungeon.current = 1;
+            player.pos = {TILE * 2.0f, TILE * (MAP_H / 2.0f)};
+        } else if (dungeon.current == 1 && t.y == MAP_H - 1) {
+            dungeon.current = 2;
+            player.pos = {TILE * (MAP_W / 2.0f), TILE * 2.0f};
+        } else if (dungeon.current == 1 && t.x == 0) {
+            dungeon.current = 0;
+            player.pos = {TILE * (MAP_W - 2.0f), TILE * (MAP_H / 2.0f)};
+        } else if (dungeon.current == 2 && t.y == 0) {
+            dungeon.current = 1;
+            player.pos = {TILE * (MAP_W / 2.0f), TILE * (MAP_H - 2.0f)};
+        } else if (dungeon.current == 2 && t.x == MAP_W - 1) {
+            dungeon.current = 3;
+            player.pos = {TILE * 2.0f, TILE * (MAP_H / 2.0f)};
+        } else if (dungeon.current == 3 && t.x == 0) {
+            dungeon.current = 2;
+            player.pos = {TILE * (MAP_W - 2.0f), TILE * (MAP_H / 2.0f)};
+        } else if (dungeon.current == 2 && t.y == MAP_H - 1) {
+            dungeon.current = 4;
+            player.pos = {TILE * (MAP_W / 2.0f), TILE * 2.0f};
+        } else if (dungeon.current == 4 && t.y == 0) {
+            dungeon.current = 2;
+            player.pos = {TILE * (MAP_W / 2.0f), TILE * (MAP_H - 2.0f)};
+        } else if (dungeon.current == 4 && t.y == MAP_H - 1 && procCount > 0) {
+            dungeon.current = baseRooms;
+            player.pos = {TILE * 2.0f, TILE * (MAP_H / 2.0f)};
+        } else if (dungeon.current >= baseRooms && dungeon.current < baseRooms + procCount) {
+            int idx = dungeon.current - baseRooms;
+            if (t.x == MAP_W - 1) {
+                if (idx + 1 < procCount) {
+                    dungeon.current += 1;
+                    player.pos = {TILE * 2.0f, TILE * (MAP_H / 2.0f)};
+                } else {
+                    dungeon.current = 2;
+                    player.pos = {TILE * 2.0f, TILE * (MAP_H / 2.0f)};
+                }
+            } else if (t.x == 0) {
+                if (idx - 1 >= 0) {
+                    dungeon.current -= 1;
+                    player.pos = {TILE * (MAP_W - 2.0f), TILE * (MAP_H / 2.0f)};
+                } else {
+                    dungeon.current = 4;
+                    player.pos = {TILE * (MAP_W / 2.0f), TILE * 2.0f};
+                }
+            }
+        }
+
+        setupRoomEntities();
+    }
+
+    Vec2 aimDirection() const {
+        Vec2 center{player.pos.x + TILE * 0.3f, player.pos.y + TILE * 0.3f};
+        Vec2 mouse{static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
+        Vec2 dir = {mouse.x - center.x, mouse.y - center.y};
+
+        if (input.padConnected && input.pad) {
+            float rx = SDL_GameControllerGetAxis(input.pad, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
+            float ry = SDL_GameControllerGetAxis(input.pad, SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
+            const float dead = 0.2f;
+            if (std::abs(rx) > dead || std::abs(ry) > dead) {
+                dir = {rx, ry};
+            }
+        }
+
+        return normalize(dir);
+    }
+
+    void startDash(Vec2 dir) {
+        if (input.dashCooldown > 0.0f) return;
+        if (length(dir) < 0.1f) return;
+        input.dashTime = 0.12f;
+        input.dashCooldown = 0.6f;
+        input.dashDir = dir;
+    }
+
+    void updateDash(float dt) {
+        if (input.dashCooldown > 0.0f) input.dashCooldown -= dt;
+        if (input.dashTime > 0.0f) {
+            input.dashTime -= dt;
+            Vec2 next = player.pos;
+            next.x += input.dashDir.x * player.speed * player.dashMult * dt;
+            next.y += input.dashDir.y * player.speed * player.dashMult * dt;
+            if (!isBlocked(next)) player.pos = next;
+        }
+    }
+
+    void updateLockOn() {
+        if (!input.lockOn) {
+            input.lockTarget = -1;
+            return;
+        }
+        float best = 999999.0f;
+        int bestIdx = -1;
+        for (size_t i = 0; i < enemies.size(); ++i) {
+            if (enemies[i].hp <= 0) continue;
+            float d = dist(player.pos, enemies[i].pos);
+            if (d < best) {
+                best = d;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        input.lockTarget = bestIdx;
+    }
+
+    void pickItems() {
+        for (auto& it : items) {
+            if (it.picked) continue;
+            if (rectIntersects(player.pos, TILE * 0.5f, it.pos, TILE * 0.5f)) {
+                it.picked = true;
+                if (it.rarity == 1) statusColor = COLOR_RARE;
+                if (it.rarity == 2) statusColor = COLOR_EPIC;
+                if (it.rarity == 3) statusColor = COLOR_LEGEND;
+                if (it.name == "Rupee") {
+                    player.rupees += 1;
+                    if (player.rupees % 5 == 0) player.attack += 1;
+                } else if (it.name == "Heart") {
+                    player.hp = clampi(player.hp + 1, 0, player.maxHp);
+                } else if (it.name == "Potion") {
+                    player.hp = clampi(player.hp + 2, 0, player.maxHp);
+                } else if (it.name == "Key") {
+                    player.keys += 1;
+                } else if (it.name == "Triforce") {
+                    win = true;
+                    worldTier += 1;
+                    pushStatus("Triforce claimed! World Tier " + std::to_string(worldTier));
+                    // Reset room state but keep progression items
+                    setupDungeon();
+                    dungeon.current = 0;
+                    setupRoomEntities();
+                } else if (it.name == "Upgrade-HP") {
+                    player.maxHp += 1;
+                    player.hp = clampi(player.hp + 1, 0, player.maxHp);
+                    pushStatus("Max HP +1");
+                } else if (it.name == "Upgrade-ATK") {
+                    player.attack += 1;
+                    pushStatus("Attack +1");
+                } else if (it.name == "Upgrade-Speed") {
+                    player.speed += 10.0f;
+                    pushStatus("Speed +");
+                } else if (it.name == "Upgrade-Dash") {
+                    player.dashMult += 0.2f;
+                    pushStatus("Dash +");
+                } else if (it.name == "Upgrade-Heart") {
+                    player.maxHp += 2;
+                    player.hp = clampi(player.hp + 2, 0, player.maxHp);
+                    pushStatus("Max HP +2");
+                } else if (it.name == "Relic-Sun") {
+                    player.attack += 2;
+                    player.maxHp += 2;
+                    player.hp = clampi(player.hp + 2, 0, player.maxHp);
+                    player.speed += 10.0f;
+                    player.dashMult += 0.2f;
+                    pushStatus("Relic of the Sun");
+                } else if (it.name == "Relic-Storm") {
+                    player.attack += 1;
+                    player.speed += 20.0f;
+                    player.dashMult += 0.4f;
+                    pushStatus("Relic of the Storm");
+                } else if (it.name == "Relic-Ocean") {
+                    player.maxHp += 3;
+                    player.hp = clampi(player.hp + 3, 0, player.maxHp);
+                    pushStatus("Relic of the Ocean");
+                } else {
+                    inv.add(it.name);
+                    pushStatus("Got " + it.name);
+                }
+            }
+        }
+    }
+
+    void updateNPCs(const Uint8* keys) {
+        if (actionKeyDown(keys, ActInteract)) {
+            for (auto& n : npcs) {
+                if (dist(player.pos, n.pos) < TILE) {
+                    n.talking = true;
+                    showDialogue = true;
+                    if (n.isGuide) {
+                        dialogueText = guidanceText();
+                    } else if (n.isTrader) {
+                        dialogueText = "Alain: Welcome to the shrine. Press E to trade.";
+                        showShop = true;
+                    } else {
+                        dialogueText = n.lines[n.currentLine];
+                    }
+                    n.currentLine = (n.currentLine + 1) % static_cast<int>(n.lines.size());
+                }
+            }
+        }
+    }
+
+    void handleAttacks(const Uint8* keys) {
+        if (player.attackCooldown > 0.0f) return;
+        bool fire = actionKeyDown(keys, ActAttack);
+        if (input.mouseShoot) fire = true;
+        if (input.padConnected && input.pad) {
+            if (SDL_GameControllerGetButton(input.pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) fire = true;
+        }
+        if (fire) {
+            player.attackCooldown = 0.25f;
+            Projectile p;
+            p.pos = {player.pos.x + TILE * 0.25f, player.pos.y + TILE * 0.25f};
+            Vec2 dir = aimDirection();
+            if (length(dir) < 0.1f) dir = {1, 0};
+            p.vel = {dir.x * PROJECTILE_SPEED, dir.y * PROJECTILE_SPEED};
+            p.damage = player.attack;
+            p.friendly = true;
+            projectiles.push_back(p);
+        }
+    }
+
+    bool hasItem(const std::string& name) const {
+        for (const auto& it : inv.items) {
+            if (it == name) return true;
+        }
+        return false;
+    }
+
+    void useUtilityItem(const Uint8* keys) {
+        if (!actionKeyDown(keys, ActUseItem)) return;
+        std::string cur = inv.current();
+        if (cur.empty()) return;
+
+        if (cur == "Boomerang") {
+            Projectile p;
+            p.pos = {player.pos.x + TILE * 0.25f, player.pos.y + TILE * 0.25f};
+            Vec2 dir = aimDirection();
+            if (length(dir) < 0.1f) dir = {1, 0};
+            p.vel = {dir.x * PROJECTILE_SPEED * 0.8f, dir.y * PROJECTILE_SPEED * 0.8f};
+            p.damage = 1;
+            p.friendly = true;
+            projectiles.push_back(p);
+            pushStatus("Boomerang!");
+        } else if (cur == "Hookshot") {
+            Vec2 dir = aimDirection();
+            if (length(dir) < 0.1f) return;
+            // Ray forward for pillar
+            for (int i = 1; i < 8; ++i) {
+                Vec2 p = {player.pos.x + dir.x * TILE * i, player.pos.y + dir.y * TILE * i};
+                IVec2 t = toTile(p, TILE);
+                if (dungeon.cur().get(t.x, t.y) == TilePillar) {
+                    player.pos = {t.x * TILE + 2.0f, t.y * TILE + 2.0f};
+                    pushStatus("Hookshot!");
+                    break;
+                }
+            }
+        } else if (cur == "Gloves") {
+            IVec2 t = toTile(player.pos, TILE);
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dungeon.cur().get(t.x + dx, t.y + dy) == TileCracked) {
+                        dungeon.cur().set(t.x + dx, t.y + dy, TileFloor);
+                        pushStatus("Cracked wall broken");
+                        return;
+                    }
+                }
+            }
+        } else if (cur == "Boots") {
+            // Boots let you cross gaps by temporarily treating them as floor
+            IVec2 t = toTile(player.pos, TILE);
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dungeon.cur().get(t.x + dx, t.y + dy) == TileGap) {
+                        dungeon.cur().set(t.x + dx, t.y + dy, TileFloor);
+                    }
+                }
+            }
+            pushStatus("Boots: path opened");
+        }
+    }
+
+    void updateProjectiles(float dt) {
+        for (auto& p : projectiles) {
+            if (!p.alive) continue;
+            p.pos.x += p.vel.x * dt;
+            p.pos.y += p.vel.y * dt;
+            IVec2 t = toTile(p.pos, TILE);
+            if (dungeon.cur().get(t.x, t.y) == TileSwitch) {
+                dungeon.cur().set(MAP_W - 2, MAP_H / 2, TileFloor);
+                p.alive = false;
+                pushStatus("Gate opened");
+                continue;
+            }
+            if (isBlockedTile(t.x, t.y)) {
+                p.alive = false;
+                continue;
+            }
+            for (auto& e : enemies) {
+                if (e.hp <= 0) continue;
+                if (p.friendly && rectIntersects(p.pos, 8, e.pos, TILE * 0.5f)) {
+                    e.hp -= p.damage;
+                    p.alive = false;
+                }
+            }
+        }
+    }
+
+    void updateEnemies(float dt) {
+        for (auto& e : enemies) {
+            if (e.hp <= 0) continue;
+
+            float speed = e.boss ? (BOSS_SPEED + worldTier * 2.0f) : ENEMY_SPEED;
+            Vec2 dir = normalize({player.pos.x - e.pos.x, player.pos.y - e.pos.y});
+
+            e.pos.x += dir.x * speed * dt;
+            e.pos.y += dir.y * speed * dt;
+
+            if (dist(player.pos, e.pos) < TILE * 0.6f) {
+                if (!player.invincible) {
+                    player.hp -= e.boss ? 2 : 1;
+                    player.invincible = true;
+                    player.invincTime = 1.0f;
+                    if (player.hp <= 0) {
+                        running = false;
+                    }
+                }
+            }
+
+            // Boss fires projectiles
+            if (e.boss) {
+                e.cooldown -= dt;
+                float cd = (e.bossType == 0) ? 1.0f : (e.bossType == 1 ? 0.7f : 0.5f);
+                if (e.cooldown <= 0.0f) {
+                    e.cooldown = cd;
+                    Projectile p;
+                    p.pos = {e.pos.x + TILE * 0.25f, e.pos.y + TILE * 0.25f};
+                    Vec2 d = normalize({player.pos.x - e.pos.x, player.pos.y - e.pos.y});
+                    p.vel = {d.x * PROJECTILE_SPEED * 0.8f, d.y * PROJECTILE_SPEED * 0.8f};
+                    p.damage = 1;
+                    p.friendly = false;
+                    projectiles.push_back(p);
+
+                    if (e.bossType == 2) {
+                        // Triple shot spread
+                        Vec2 d1 = normalize({d.x + 0.3f, d.y});
+                        Vec2 d2 = normalize({d.x - 0.3f, d.y});
+                        Projectile p1 = p;
+                        Projectile p2 = p;
+                        p1.vel = {d1.x * PROJECTILE_SPEED * 0.7f, d1.y * PROJECTILE_SPEED * 0.7f};
+                        p2.vel = {d2.x * PROJECTILE_SPEED * 0.7f, d2.y * PROJECTILE_SPEED * 0.7f};
+                        projectiles.push_back(p1);
+                        projectiles.push_back(p2);
+                    }
+                }
+            }
+        }
+    }
+
+    void awardXp() {
+        for (auto& e : enemies) {
+            if (e.hp <= 0 && !e.rewarded) {
+                int gain = e.boss ? (10 + worldTier * 2) : (2 + worldTier / 2);
+                player.xp += gain;
+                e.rewarded = true;
+                pushStatus("XP +" + std::to_string(gain));
+            }
+        }
+    }
+
+    void updatePlayerInvincible(float dt) {
+        if (player.invincible) {
+            player.invincTime -= dt;
+            if (player.invincTime <= 0.0f) {
+                player.invincible = false;
+            }
+        }
+        if (player.attackCooldown > 0.0f) {
+            player.attackCooldown -= dt;
+        }
+    }
+
+    void updateProjectilesHitPlayer() {
+        for (auto& p : projectiles) {
+            if (!p.alive || p.friendly) continue;
+            if (rectIntersects(p.pos, 8, player.pos, TILE * 0.5f)) {
+                p.alive = false;
+                if (!player.invincible) {
+                    player.hp -= p.damage;
+                    player.invincible = true;
+                    player.invincTime = 1.0f;
+                    if (player.hp <= 0) running = false;
+                }
+            }
+        }
+    }
+
+    void pruneDead() {
+        for (auto& p : projectiles) {
+            if (!p.alive) {
+                p.pos = {-999, -999};
+            }
+        }
+    }
+
+    void updateFps(float dt) {
+        fpsTimer += dt;
+        fpsFrames += 1;
+        if (fpsTimer >= 0.5f) {
+            fps = fpsFrames / fpsTimer;
+            fpsTimer = 0.0f;
+            fpsFrames = 0;
+        }
+    }
+
+    void updateStatus(float dt) {
+        if (statusTime > 0.0f) {
+            statusTime -= dt;
+            if (statusTime <= 0.0f) {
+                statusText.clear();
+            }
+        }
+    }
+
+    std::vector<std::pair<std::string, int>> shopItems() const {
+        return {
+            {"HP +1", 15 + worldTier * 2},
+            {"Attack +1", 18 + worldTier * 2},
+            {"Speed +10", 12 + worldTier},
+            {"Dash +0.2", 14 + worldTier},
+            {"Max HP +2", 24 + worldTier * 3}
+        };
+    }
+
+    void buyShopItem(int idx) {
+        auto items = shopItems();
+        if (idx < 0 || idx >= static_cast<int>(items.size())) return;
+        int cost = items[idx].second;
+        if (player.xp < cost) {
+            pushStatus("Not enough XP");
+            return;
+        }
+        player.xp -= cost;
+        switch (idx) {
+            case 0: player.maxHp += 1; player.hp = clampi(player.hp + 1, 0, player.maxHp); break;
+            case 1: player.attack += 1; break;
+            case 2: player.speed += 10.0f; break;
+            case 3: player.dashMult += 0.2f; break;
+            case 4: player.maxHp += 2; player.hp = clampi(player.hp + 2, 0, player.maxHp); break;
+            default: break;
+        }
+        pushStatus("Purchase complete");
+    }
+
+    void update(float dt) {
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        if (keys[SDL_SCANCODE_ESCAPE]) running = false;
+
+        Vec2 dir = getMovementInput(keys);
+        movePlayer(dt, dir);
+
+        bool dashPressed = actionKeyDown(keys, ActDash);
+        if (input.padConnected && input.pad) {
+            if (SDL_GameControllerGetButton(input.pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) dashPressed = true;
+        }
+        if (dashPressed) startDash(dir);
+
+        updateDash(dt);
+        updateLockOn();
+
+        handleDoorTransition();
+        pickItems();
+        updateNPCs(keys);
+        updateSohaanFollow(dt);
+        handleAttacks(keys);
+        useUtilityItem(keys);
+        updateEnemies(dt);
+        awardXp();
+        updateProjectiles(dt);
+        updateProjectilesHitPlayer();
+        updatePlayerInvincible(dt);
+        pruneDead();
+        updateFps(dt);
+        updateStatus(dt);
+    }
+    void drawMap() {
+        for (int y = 0; y < MAP_H; ++y) {
+            for (int x = 0; x < MAP_W; ++x) {
+                int t = dungeon.cur().get(x, y);
+                Color c = COLOR_FLOOR;
+                if (t == TileWall) c = COLOR_WALL;
+                if (t == TileDoor) c = {120, 80, 40, 255};
+                if (t == TileWater) c = {40, 70, 120, 255};
+                if (t == TileGap) c = {10, 10, 20, 255};
+                if (t == TilePillar) c = {160, 160, 180, 255};
+                if (t == TileCracked) c = {120, 100, 80, 255};
+                if (t == TileGate) c = {120, 60, 30, 255};
+                if (t == TileSwitch) c = {80, 160, 80, 255};
+                drawRect(renderer, x * TILE, y * TILE, TILE, TILE, c);
+            }
+        }
+    }
+
+    void drawPlayer() {
+        Color c = COLOR_PLAYER;
+        if (player.invincible && (static_cast<int>(tickMs() / 100) % 2 == 0)) {
+            c = {255, 255, 255, 255};
+        }
+        drawRect(renderer, player.pos.x, player.pos.y, TILE * 0.6f, TILE * 0.6f, c);
+    }
+
+    void drawEnemies() {
+        for (auto& e : enemies) {
+            if (e.hp <= 0) continue;
+            Color c = e.boss ? COLOR_BOSS : COLOR_ENEMY;
+            drawRect(renderer, e.pos.x, e.pos.y, TILE * 0.6f, TILE * 0.6f, c);
+            // HP bar
+            float pct = static_cast<float>(e.hp) / static_cast<float>(e.maxHp);
+            drawRect(renderer, e.pos.x, e.pos.y - 6, TILE * 0.6f * pct, 4, {220, 80, 80, 255});
+        }
+    }
+
+    void drawLockOn() {
+        if (!input.lockOn || input.lockTarget < 0) return;
+        const Enemy& e = enemies[input.lockTarget];
+        if (e.hp <= 0) return;
+        drawOutline(renderer, e.pos.x - 4, e.pos.y - 4, TILE * 0.6f + 8, TILE * 0.6f + 8, {250, 240, 100, 255});
+    }
+
+    void drawItems() {
+        for (auto& it : items) {
+            if (it.picked) continue;
+            Color c = COLOR_ITEM;
+            if (it.rarity == 1) c = COLOR_RARE;
+            if (it.rarity == 2) c = COLOR_EPIC;
+            if (it.rarity == 3) c = COLOR_LEGEND;
+            drawRect(renderer, it.pos.x, it.pos.y, TILE * 0.4f, TILE * 0.4f, c);
+        }
+    }
+
+    void drawNPCs() {
+        for (auto& n : npcs) {
+            Color c = n.isGuide ? Color{240, 180, 80, 255} : COLOR_NPC;
+            drawRect(renderer, n.pos.x, n.pos.y, TILE * 0.5f, TILE * 0.5f, c);
+            if (n.isGuide) {
+                drawText(renderer, uiFont.font, static_cast<int>(n.pos.x) - 6, static_cast<int>(n.pos.y) - 16, "Sohaan", COLOR_TEXT);
+            }
+            if (n.isTrader) {
+                drawText(renderer, uiFont.font, static_cast<int>(n.pos.x) - 6, static_cast<int>(n.pos.y) - 16, "Alain", COLOR_TEXT);
+            }
+        }
+    }
+
+    void drawProjectiles() {
+        for (auto& p : projectiles) {
+            if (!p.alive) continue;
+            drawCircle(renderer, static_cast<int>(p.pos.x), static_cast<int>(p.pos.y), 3, COLOR_PROJECTILE);
+        }
+    }
+
+    void drawMinimap() {
+        if (!settings.showMinimap) return;
+        int miniSize = 4;
+        int offsetX = SCREEN_W - (MAP_W * miniSize) - 10;
+        int offsetY = 10;
+        for (int y = 0; y < MAP_H; ++y) {
+            for (int x = 0; x < MAP_W; ++x) {
+                int t = dungeon.cur().get(x, y);
+                Color c = (t == TileWall) ? Color{60, 80, 100, 255} : Color{30, 40, 50, 255};
+                if (t == TileDoor) c = {120, 80, 40, 255};
+                if (t == TileWater) c = {40, 70, 120, 255};
+                if (t == TileGap) c = {10, 10, 20, 255};
+                if (t == TilePillar) c = {160, 160, 180, 255};
+                if (t == TileCracked) c = {120, 100, 80, 255};
+                if (t == TileGate) c = {120, 60, 30, 255};
+                if (t == TileSwitch) c = {80, 160, 80, 255};
+                drawRect(renderer, offsetX + x * miniSize, offsetY + y * miniSize, miniSize, miniSize, c);
+            }
+        }
+        IVec2 p = toTile(player.pos, TILE);
+        drawRect(renderer, offsetX + p.x * miniSize, offsetY + p.y * miniSize, miniSize, miniSize, {220, 220, 140, 255});
+    }
+
+    void drawHelp() {
+        if (!settings.showHelp) return;
+        drawRect(renderer, 60, 60, SCREEN_W - 120, SCREEN_H - 120, {10, 10, 10, 230});
+        drawOutline(renderer, 60, 60, SCREEN_W - 120, SCREEN_H - 120, {80, 120, 160, 255});
+        drawText(renderer, uiFont.font, 80, 80, "Advanced Controls", COLOR_TEXT);
+        int y = 110;
+        for (int i = 0; i < ActCount; ++i) {
+            std::string line = std::string(actionName(static_cast<Action>(i))) + ": " + SDL_GetScancodeName(input.binds.keys[i]);
+            drawText(renderer, uiFont.font, 80, y, line, COLOR_TEXT);
+            y += 18;
+        }
+        y += 8;
+        drawText(renderer, uiFont.font, 80, y, "Mouse: aim with cursor, left click shoot, right click lock-on", COLOR_TEXT);
+        y += 18;
+        drawText(renderer, uiFont.font, 80, y, "Gamepad: left stick move, right stick aim, RB shoot, LB dash", COLOR_TEXT);
+        y += 18;
+        drawText(renderer, uiFont.font, 80, y, "F2 remap | F5 save binds | F9 load binds | F3 minimap | F4 FPS | F10 settings", COLOR_TEXT);
+    }
+
+    void drawStatus() {
+        if (statusText.empty()) return;
+        drawRect(renderer, 10, SCREEN_H - 50, 300, 30, {10, 10, 10, 210});
+        drawOutline(renderer, 10, SCREEN_H - 50, 300, 30, {80, 120, 160, 255});
+        drawText(renderer, uiFont.font, 20, SCREEN_H - 44, statusText, statusColor);
+    }
+
+    void drawSettings() {
+        if (!settings.showSettings) return;
+        drawRect(renderer, 120, 80, SCREEN_W - 240, SCREEN_H - 160, {12, 12, 12, 235});
+        drawOutline(renderer, 120, 80, SCREEN_W - 240, SCREEN_H - 160, {80, 120, 160, 255});
+        drawText(renderer, uiFont.font, 140, 100, "Settings", COLOR_TEXT);
+
+        int y = 140;
+        std::vector<std::string> lines = {
+            std::string("Minimap: ") + (settings.showMinimap ? "On" : "Off"),
+            std::string("FPS Counter: ") + (settings.showFps ? "On" : "Off"),
+            std::string("FPS Cap: ") + std::to_string(settings.fpsCap),
+            std::string("Music Volume: ") + std::to_string(settings.musicVolume),
+            std::string("SFX Volume: ") + std::to_string(settings.sfxVolume)
+        };
+        for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+            std::string line = lines[i];
+            if (i == settings.selected) line = "> " + line;
+            drawText(renderer, uiFont.font, 140, y, line, COLOR_TEXT);
+            y += 22;
+        }
+        drawText(renderer, uiFont.font, 140, y + 10, "Use Up/Down to select, Left/Right to change", COLOR_TEXT);
+        drawText(renderer, uiFont.font, 140, y + 30, "F10 to close", COLOR_TEXT);
+    }
+
+    void drawShop() {
+        if (!showShop) return;
+        drawRect(renderer, 140, 100, SCREEN_W - 280, SCREEN_H - 200, {12, 12, 12, 235});
+        drawOutline(renderer, 140, 100, SCREEN_W - 280, SCREEN_H - 200, {80, 120, 160, 255});
+        drawText(renderer, uiFont.font, 160, 120, "Alain's Mountain Shrine", COLOR_TEXT);
+        drawText(renderer, uiFont.font, 160, 140, "XP: " + std::to_string(player.xp), COLOR_TEXT);
+
+        auto items = shopItems();
+        int y = 180;
+        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+            std::string line = items[i].first + " - " + std::to_string(items[i].second) + " XP";
+            if (i == shopSelected) line = "> " + line;
+            drawText(renderer, uiFont.font, 160, y, line, COLOR_TEXT);
+            y += 22;
+        }
+        drawText(renderer, uiFont.font, 160, y + 8, "Enter to buy | Esc to close", COLOR_TEXT);
+    }
+
+    void drawGuidanceArrow() {
+        Vec2 target = guidanceTarget();
+        Vec2 center{player.pos.x + TILE * 0.3f, player.pos.y + TILE * 0.3f};
+        Vec2 dir = normalize({target.x - center.x, target.y - center.y});
+        if (length(dir) < 0.1f) return;
+
+        Vec2 tip{center.x + dir.x * 24.0f, center.y + dir.y * 24.0f};
+        Vec2 left{-dir.y, dir.x};
+        Vec2 p1{tip.x, tip.y};
+        Vec2 p2{tip.x - dir.x * 10.0f + left.x * 6.0f, tip.y - dir.y * 10.0f + left.y * 6.0f};
+        Vec2 p3{tip.x - dir.x * 10.0f - left.x * 6.0f, tip.y - dir.y * 10.0f - left.y * 6.0f};
+
+        setColor(renderer, {240, 200, 80, 255});
+        SDL_RenderDrawLine(renderer, static_cast<int>(center.x), static_cast<int>(center.y), static_cast<int>(tip.x), static_cast<int>(tip.y));
+        SDL_RenderDrawLine(renderer, static_cast<int>(p1.x), static_cast<int>(p1.y), static_cast<int>(p2.x), static_cast<int>(p2.y));
+        SDL_RenderDrawLine(renderer, static_cast<int>(p2.x), static_cast<int>(p2.y), static_cast<int>(p3.x), static_cast<int>(p3.y));
+        SDL_RenderDrawLine(renderer, static_cast<int>(p3.x), static_cast<int>(p3.y), static_cast<int>(p1.x), static_cast<int>(p1.y));
+    }
+
+    void drawWorldMap() {
+        if (!settings.showWorldMap) return;
+        drawRect(renderer, 40, 40, SCREEN_W - 80, SCREEN_H - 80, {8, 8, 12, 235});
+        drawOutline(renderer, 40, 40, SCREEN_W - 80, SCREEN_H - 80, {80, 120, 160, 255});
+        drawText(renderer, uiFont.font, 60, 60, "World Map (Tier " + std::to_string(worldTier) + ")", COLOR_TEXT);
+        drawText(renderer, uiFont.font, 60, 80, "Seed: " + std::to_string(worldSeed), COLOR_TEXT);
+
+        int startX = 80;
+        int startY = 140;
+        int stepX = 80;
+
+        auto roomLabel = [&](int id) {
+            if (id == 0) return std::string("Start");
+            if (id == 1) return std::string("Hall");
+            if (id == 2) return std::string("Lake");
+            if (id == 3) return std::string("Boss");
+            if (id == 4) return std::string("Grove");
+            return std::string("Ruins");
+        };
+
+        for (int i = 0; i < baseRooms + procCount; ++i) {
+            int x = startX + i * stepX;
+            int y = startY;
+            Color c = (i == dungeon.current) ? Color{220, 220, 140, 255} : Color{120, 160, 200, 255};
+            drawRect(renderer, x, y, 40, 20, c);
+            drawText(renderer, uiFont.font, x + 4, y + 2, roomLabel(i), COLOR_BG);
+            if (i + 1 < baseRooms + procCount) {
+                drawRect(renderer, x + 40, y + 8, 40, 4, {80, 120, 160, 255});
+            }
+        }
+        drawText(renderer, uiFont.font, 60, 200, "Procedural puzzle layouts scale with tier.", COLOR_TEXT);
+    }
+
+    void drawHUD() {
+        int x = 10;
+        int y = 10;
+        for (int i = 0; i < player.maxHp; ++i) {
+            Color c = (i < player.hp) ? Color{220, 80, 80, 255} : Color{80, 80, 80, 255};
+            drawRect(renderer, x + i * 18, y, 14, 14, c);
+        }
+        drawText(renderer, uiFont.font, 10, 30, "Rupees: " + std::to_string(player.rupees), COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 50, "Attack: " + std::to_string(player.attack), COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 70, "Keys: " + std::to_string(player.keys), COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 90, "Room: " + dungeon.cur().name, COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 130, "World Tier: " + std::to_string(worldTier), COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 150, "XP: " + std::to_string(player.xp), COLOR_HUD);
+        drawText(renderer, uiFont.font, 10, 170, "Speed: " + std::to_string(static_cast<int>(player.speed)), COLOR_HUD);
+        if (settings.showFps) {
+            drawText(renderer, uiFont.font, 10, 110, "FPS: " + std::to_string(static_cast<int>(fps)), COLOR_HUD);
+        }
+
+        if (showInventory) {
+            drawRect(renderer, 600, 10, 330, 120, {20, 20, 20, 220});
+            drawOutline(renderer, 600, 10, 330, 120, {80, 120, 160, 255});
+            drawText(renderer, uiFont.font, 610, 20, "Inventory", COLOR_TEXT);
+            int iy = 45;
+            for (size_t i = 0; i < inv.items.size(); ++i) {
+                std::string line = inv.items[i];
+                if (static_cast<int>(i) == inv.selected) line = "> " + line;
+                drawText(renderer, uiFont.font, 610, iy, line, COLOR_TEXT);
+                iy += 18;
+            }
+            if (inv.items.empty()) {
+                drawText(renderer, uiFont.font, 610, 45, "(empty)", COLOR_TEXT);
+            }
+        }
+
+        if (showDialogue) {
+            drawRect(renderer, 80, SCREEN_H - 120, SCREEN_W - 160, 90, {10, 10, 10, 230});
+            drawOutline(renderer, 80, SCREEN_H - 120, SCREEN_W - 160, 90, {120, 180, 220, 255});
+            drawText(renderer, uiFont.font, 100, SCREEN_H - 100, dialogueText, COLOR_TEXT);
+        }
+
+        drawText(renderer, uiFont.font, 10, SCREEN_H - 22, "F1 help | F2 remap | F3 minimap | F4 FPS | F5 save binds | F6 map | F9 load binds | F10 settings | X use item", {160, 180, 200, 255});
+    }
+
+    void render() {
+        setColor(renderer, COLOR_BG);
+        SDL_RenderClear(renderer);
+
+        drawMap();
+        drawItems();
+        drawNPCs();
+        drawEnemies();
+        drawProjectiles();
+        drawPlayer();
+        drawLockOn();
+        drawGuidanceArrow();
+        drawMinimap();
+        drawHUD();
+        drawStatus();
+        drawHelp();
+        drawSettings();
+        drawWorldMap();
+        drawShop();
+
+        SDL_RenderPresent(renderer);
+    }
+
+    void gameLoop() {
+        while (running) {
+            uint32_t now = tickMs();
+            delta = (now - lastTick) / 1000.0f;
+            lastTick = now;
+
+            // Cap delta for stability
+            if (delta > 0.05f) delta = 0.05f;
+
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_QUIT) running = false;
+                if (ev.type == SDL_MOUSEMOTION) {
+                    input.mouseX = ev.motion.x;
+                    input.mouseY = ev.motion.y;
+                }
+                if (ev.type == SDL_MOUSEBUTTONDOWN) {
+                    if (ev.button.button == SDL_BUTTON_LEFT) input.mouseShoot = true;
+                    if (ev.button.button == SDL_BUTTON_RIGHT) input.lockOn = !input.lockOn;
+                }
+                if (ev.type == SDL_MOUSEBUTTONUP) {
+                    if (ev.button.button == SDL_BUTTON_LEFT) input.mouseShoot = false;
+                }
+                if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+                    openController();
+                }
+                if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
+                    closeController();
+                }
+                if (ev.type == SDL_KEYDOWN && input.remapMode) {
+                    input.binds.keys[input.remapIndex] = ev.key.keysym.scancode;
+                    input.remapIndex++;
+                    if (input.remapIndex >= ActCount) {
+                        input.remapMode = false;
+                        input.remapIndex = 0;
+                        pushStatus("Remap complete");
+                    }
+                }
+                if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
+                    SDL_Scancode sc = ev.key.keysym.scancode;
+                    if (sc == SDL_SCANCODE_I) showInventory = !showInventory;
+                    if (sc == SDL_SCANCODE_R) inv.next();
+                    if (sc == SDL_SCANCODE_F) inv.prev();
+                    if (sc == SDL_SCANCODE_TAB) input.lockOn = !input.lockOn;
+                    if (sc == SDL_SCANCODE_F1) settings.showHelp = !settings.showHelp;
+                    if (sc == SDL_SCANCODE_F10) settings.showSettings = !settings.showSettings;
+                    if (sc == SDL_SCANCODE_F6) settings.showWorldMap = !settings.showWorldMap;
+                    if (sc == SDL_SCANCODE_F2) {
+                        input.remapMode = true;
+                        input.remapIndex = 0;
+                        pushStatus("Remap: press keys for each action");
+                    }
+                    if (sc == SDL_SCANCODE_F3) settings.showMinimap = !settings.showMinimap;
+                    if (sc == SDL_SCANCODE_F4) settings.showFps = !settings.showFps;
+                    if (sc == SDL_SCANCODE_F5) saveBinds();
+                    if (sc == SDL_SCANCODE_F9) loadBinds();
+                    if (sc == SDL_SCANCODE_ESCAPE && input.remapMode) {
+                        input.remapMode = false;
+                        input.remapIndex = 0;
+                        pushStatus("Remap canceled");
+                    }
+                    if (showShop) {
+                        if (sc == SDL_SCANCODE_UP) shopSelected = (shopSelected - 1 + 5) % 5;
+                        if (sc == SDL_SCANCODE_DOWN) shopSelected = (shopSelected + 1) % 5;
+                        if (sc == SDL_SCANCODE_RETURN) buyShopItem(shopSelected);
+                        if (sc == SDL_SCANCODE_ESCAPE) showShop = false;
+                    }
+                    if (settings.showSettings) {
+                        if (sc == SDL_SCANCODE_UP) settings.selected = (settings.selected - 1 + 5) % 5;
+                        if (sc == SDL_SCANCODE_DOWN) settings.selected = (settings.selected + 1) % 5;
+                        if (sc == SDL_SCANCODE_LEFT) {
+                            if (settings.selected == 0) settings.showMinimap = !settings.showMinimap;
+                            if (settings.selected == 1) settings.showFps = !settings.showFps;
+                            if (settings.selected == 2) settings.fpsCap = 60;
+                            if (settings.selected == 3) settings.musicVolume = clampi(settings.musicVolume - 10, 0, 100);
+                            if (settings.selected == 4) settings.sfxVolume = clampi(settings.sfxVolume - 10, 0, 100);
+                        }
+                        if (sc == SDL_SCANCODE_RIGHT) {
+                            if (settings.selected == 0) settings.showMinimap = !settings.showMinimap;
+                            if (settings.selected == 1) settings.showFps = !settings.showFps;
+                            if (settings.selected == 2) settings.fpsCap = (settings.fpsCap == 60) ? 120 : (settings.fpsCap == 120 ? 300 : 60);
+                            if (settings.selected == 3) settings.musicVolume = clampi(settings.musicVolume + 10, 0, 100);
+                            if (settings.selected == 4) settings.sfxVolume = clampi(settings.sfxVolume + 10, 0, 100);
+                        }
+                    }
+                }
+            }
+
+            (void)0;
+
+            update(delta);
+            render();
+
+            // 300 FPS cap
+            uint32_t frameMs = tickMs() - now;
+            int cap = settings.fpsCap;
+            if (cap < 30) cap = 30;
+            uint32_t targetMs = 1000 / static_cast<uint32_t>(cap);
+            if (frameMs < targetMs) {
+                SDL_Delay(targetMs - frameMs);
+            }
+        }
+    }
+};
+
+// ----------------------------------------------
+// Entry
+// ----------------------------------------------
+
+int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+
+    Game game;
+    if (!game.init()) {
+        SDL_Log("Failed to init game");
+        return 1;
+    }
+
+    game.gameLoop();
+    game.shutdown();
+    return 0;
 }
-
-render();
-</script>
-
-</body>
-</html>
